@@ -11,6 +11,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
+      - name: Checkout build patches
+        uses: actions/checkout@v4
+        with:
+          path: ci
+
       - name: Checkout alioth kernel
         uses: actions/checkout@v4
         with:
@@ -57,6 +62,18 @@ jobs:
           fi
           git rev-parse HEAD
           git -C KernelSU rev-parse HEAD
+
+      - name: Backport SuSFS process flags to 4.19
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          git apply --check ../ci/patch-susfs-419.patch
+          git apply ../ci/patch-susfs-419.patch
+          grep -q '#define TIF_PROC_NO_SU 34' include/linux/susfs_def.h
+          grep -q 'susfs_is_current_proc_umounted_for_zygote_next()' fs/namespace.c
+          for path in fs/exec.c fs/open.c fs/stat.c; do
+            grep -q 'susfs_is_current_proc_no_su()' "$path"
+          done
 
       - name: Build MIUI kernel
         working-directory: kernel
