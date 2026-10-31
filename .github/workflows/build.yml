@@ -1,0 +1,97 @@
+name: Build alioth MIUI kernel with BakaSU
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout alioth kernel
+        uses: actions/checkout@v4
+        with:
+          repository: coolzyd9107/android_kernel_xiaomi_sm8250
+          ref: e001a3a3e5fdf424bcb83b3ce285d1eb3c114fdd
+          path: kernel
+          fetch-depth: 1
+
+      - name: Checkout matching BakaSU driver
+        uses: actions/checkout@v4
+        with:
+          repository: Baka-SU/BakaSU
+          ref: 239e1e8871b8fcd51a6e5b3002e0ba522fdd99fb
+          path: kernel/KernelSU
+          fetch-depth: 1
+
+      - name: Prepare build host
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential git curl wget bison flex zip bc cpio libssl-dev libelf-dev ccache python-is-python3
+          mkdir -p "$HOME/zyc-clang"
+          curl -fL --retry 3 -o /tmp/zyc-clang.tar.gz https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260510-release/Clang-16.0.6-20260510.tar.gz
+          tar -xzf /tmp/zyc-clang.tar.gz -C "$HOME/zyc-clang"
+
+      - name: Integrate pinned BakaSU
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          test -f fs/susfs.c
+          test -f KernelSU/kernel/feature/selinux_hide.c
+          ln -s ../KernelSU/kernel drivers/kernelsu
+          if ! grep -q 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile; then
+            printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
+          fi
+          if ! grep -q 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig; then
+            printf '\nsource "drivers/kernelsu/Kconfig"\n' >> drivers/Kconfig
+          fi
+          # The upstream MIUI script otherwise fetches ReSukiSU in place of BakaSU.
+          sed -i '/raw.githubusercontent.com\/ReSukiSU\/ReSukiSU\/main\/kernel\/setup.sh/c\    echo "Using pinned BakaSU source"' build-miui.sh
+          if grep -q 'raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh' build-miui.sh; then
+            echo 'ReSukiSU setup call remains in build-miui.sh' >&2
+            exit 1
+          fi
+          git rev-parse HEAD
+          git -C KernelSU rev-parse HEAD
+
+      - name: Build MIUI kernel
+        working-directory: kernel
+        run: |
+          set -o pipefail
+          bash build-miui.sh alioth ksu 2>&1 | tee build.log
+
+      - name: Verify hidden-root configuration and collect artifact
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          cfg=out/.config
+          for option in KSU KSU_SUSFS KSU_SUSFS_SUS_PATH KSU_SUSFS_SUS_MOUNT KSU_SUSFS_SUS_KSTAT KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG KSU_SUSFS_SUS_MAP SECURITY_SELINUX; do
+            grep -qx "CONFIG_${option}=y" "$cfg" || { echo "Missing CONFIG_${option}=y"; exit 1; }
+          done
+          test -s out/arch/arm64/boot/Image
+          test -s out/arch/arm64/boot/dtbo.img
+          test -s out/arch/arm64/boot/dtb
+          mkdir -p ../artifact
+          cp out/arch/arm64/boot/Image ../artifact/Image
+          cp out/arch/arm64/boot/dtb ../artifact/dtb
+          cp out/arch/arm64/boot/dtbo.img ../artifact/dtbo.img
+          cp "$cfg" ../artifact/kernel.config
+          cp ./*.zip ../artifact/
+          git rev-parse HEAD > ../artifact/kernel-commit.txt
+          git -C KernelSU rev-parse HEAD > ../artifact/bakasu-commit.txt
+          sha256sum ../artifact/* > ../artifact/SHA256SUMS
+
+      - name: Upload build output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alioth-bakasu-build
+          path: |
+            artifact/*
+            kernel/build.log
+            kernel/out/.config
+          if-no-files-found: warn
