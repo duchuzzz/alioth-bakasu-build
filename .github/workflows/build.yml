@@ -23,7 +23,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Baka-SU/BakaSU
-          ref: 239e1e8871b8fcd51a6e5b3002e0ba522fdd99fb
+          ref: d5e9e025b8b49155f8014684d64c91742b465f65
           path: kernel/KernelSU
           fetch-depth: 1
 
